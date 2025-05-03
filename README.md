@@ -20,6 +20,8 @@ Use cases include interactive installations, holobox control, multimedia trigger
 - LILYGO T-Eth Lite ESP32 board  
 - Adafruit PN532 NFC Reader (connected via I2C or IRQ+RESET)  
 - Ethernet cable + connection  
+- Bluetooth Serial terminal app (e.g., Serial Bluetooth Terminal)
+- Optional: POE Switch or injector for power over Ethernet
 - Optional: NFC tags (MIFARE ISO14443A)
 
 ---

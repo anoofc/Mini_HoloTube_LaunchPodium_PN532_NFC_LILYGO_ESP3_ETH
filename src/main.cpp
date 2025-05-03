@@ -1,10 +1,12 @@
 #define DEBUG     1
 
 #define TIMEOUT     100
-
+#define WD_TIMEOUT  8       // seconds  
 // Define custom I2C pins
 #define I2C_SDA 14  // Example: GPIO21
 #define I2C_SCL 32  // Example: GPIO22
+
+#define MAX_TAGS 20
 
 #define PN532_IRQ   (2)
 #define PN532_RESET (3)  // Not connected by default on the NFC Shield
@@ -18,6 +20,8 @@
 #include <Preferences.h>
 #include <Adafruit_PN532.h>
 #include "eth_properties.h"
+#include "esp_task_wdt.h"
+
 
 BluetoothSerial SerialBT; // Bluetooth Serial
 Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET);  // Choose your IRQ and RESET pins
@@ -33,11 +37,11 @@ bool cardPresesnt = false;
 
 uint8_t numTags       = 0;                            // Number of tags
 String removeCommand  = "";                           // Remove command
-String commands[]     = {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""};     // Commands for tags
-String tags[]         = {"", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""};         // Tag IDs
+String commands[MAX_TAGS];
+String tags[MAX_TAGS];            // Tag IDs
 String tagID          = "";       // Current tag ID
 String prevTagID      = "";       // Previous tag ID
-uint8_t OSCMessageMode [] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; // OSC message for tags
+uint8_t OSCMessageMode[MAX_TAGS]; 
 String RemoveOSCMessageString = ""; // OSC message for tag removal
 
 const String HELP = "NFC PN532 - Firmware v1.0\n N<num> - Set number of tags. 'Eg: N10'\nT<index> - Set Last placed tag ID for index. Eg: T01\nC<index><command> - Set command for index. Eg: C01HELLO - Set HELLO command for index 1\nR<command> - Set Tag Remove command. Eg: RREMOVED - Set REMOVED command for tag remove. \n HELP - Show this help message\n\n";
@@ -72,11 +76,11 @@ void saveNetworkConfig() {
 
 void loadNetworkConfig() {
   preferences.begin("RFID", true);
-  ip = loadIPAddress("ip", IPAddress(10, 255, 250, 150));
-  subnet = loadIPAddress("sub", IPAddress(255, 255, 254, 0));
-  gateway = loadIPAddress("gw", IPAddress(10, 255, 250, 1));
-  outIp = loadIPAddress("out", IPAddress(10, 255, 250, 129));
-  inPort = preferences.getUInt("inPort", 7001); // Load input port
+  ip      = loadIPAddress("ip",  IPAddress(10, 255, 250, 150));
+  subnet  = loadIPAddress("sub", IPAddress(255, 255, 254, 0));
+  gateway = loadIPAddress("gw",  IPAddress(10, 255, 250, 1));
+  outIp   = loadIPAddress("out", IPAddress(10, 255, 250, 129));
+  inPort  = preferences.getUInt("inPort", 7001); // Load input port
   outPort = preferences.getUInt("outPort", 7000); // Load output port
   for (int i = 0; i < numTags; i++) { OSCMessageMode[i] = preferences.getUInt(("mode" + String(i)).c_str(), 0); } // Load mode for each tag
   preferences.end();
@@ -334,8 +338,9 @@ void nfcInit(){
 
   uint32_t versiondata = nfc.getFirmwareVersion();
   if (!versiondata) {
-    if (DEBUG) { Serial.println("Didn't find PN53x board");}
-    while (1); // halt
+    Serial.println("PN532 not detected. Retrying...");
+    delay(5000);  // Retry after 5 seconds
+    ESP.restart(); // Or go back to loop
   }
   
   if (DEBUG) {
@@ -362,13 +367,18 @@ void loadConfig(){
 void setup() {
   Serial.begin(115200);
   SerialBT.begin("Mini Holotube");
+  // Initialize WDT (8 seconds timeout)
+  esp_task_wdt_init(WD_TIMEOUT, true); // timeout in seconds, panic = true
+  esp_task_wdt_add(NULL);     // Add current thread to WDT
   loadConfig();
   loadNetworkConfig();
   nfcInit();
   ethInit();
+
 }
 
 void loop() {
+  esp_task_wdt_reset(); // Feed the watchdog
   readNFC();
   readBTSerial();
 }
