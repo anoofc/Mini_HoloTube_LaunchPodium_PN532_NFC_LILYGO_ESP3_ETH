@@ -110,9 +110,13 @@ void timeCodeOSCSend(uint8_t mode){
 
 void processTagID(String tagID) {
   for (int i = 0; i < numTags; i++) {
-    if (tagID == tags[i]) {
-      timeCodeOSCSend(OSCMessageMode[i]);
-      Serial.println(commands[i]);
+    if (i < tags.size()) {
+      if (tagID == tags[i]) {
+        timeCodeOSCSend(OSCMessageMode[i]);
+        Serial.println("TAG ID: " + tagID + " - " + commands[i]);
+        SerialBT.println("TAG ID: " + tagID + " - " + commands[i]);
+        return;
+      }
     }
   }
 }
@@ -371,6 +375,9 @@ void nfcInit(){
 void loadConfig(){
   preferences.begin("RFID", true); // 
   numTags = preferences.getUInt("numTags", 2); // Get number of tags
+  tags.resize(numTags, "");
+  commands.resize(numTags, "");
+  OSCMessageMode.resize(numTags, 0);
   removeCommand = preferences.getString("removeCommand", ""); // Get remove command
   for (int i = 0; i < numTags; i++) {
     if (i < tags.size()) {
