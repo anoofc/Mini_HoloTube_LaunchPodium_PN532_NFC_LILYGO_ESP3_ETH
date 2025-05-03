@@ -2,11 +2,9 @@
 
 #define TIMEOUT     100
 
-
 // Define custom I2C pins
 #define I2C_SDA 14  // Example: GPIO21
 #define I2C_SCL 32  // Example: GPIO22
-
 
 #define PN532_IRQ   (2)
 #define PN532_RESET (3)  // Not connected by default on the NFC Shield
@@ -43,7 +41,6 @@ uint8_t OSCMessageMode [] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 
 String RemoveOSCMessageString = ""; // OSC message for tag removal
 
 const String HELP = "NFC PN532 - Firmware v1.0\n N<num> - Set number of tags. 'Eg: N10'\nT<index> - Set Last placed tag ID for index. Eg: T01\nC<index><command> - Set command for index. Eg: C01HELLO - Set HELLO command for index 1\nR<command> - Set Tag Remove command. Eg: RREMOVED - Set REMOVED command for tag remove. \n HELP - Show this help message\n\n";
-
 
 void saveIPAddress(const char* keyPrefix, IPAddress address) {
   for (int i = 0; i < 4; i++) {
@@ -85,7 +82,6 @@ void loadNetworkConfig() {
   preferences.end();
 }
 
-
 void oscSend(uint8_t column, int value) {
   char address[20];
   snprintf(address, sizeof(address), "/composition/columns/%d/connect", column);
@@ -110,7 +106,7 @@ void timeCodeOSCSend(uint8_t mode){
 void processTagID(String tagID) {
   for (int i = 0; i < numTags; i++) {
     if (tagID == tags[i]) {
-      timeCodeOSCSend(i+1);
+      timeCodeOSCSend(OSCMessageMode[i]);
       Serial.println(commands[i]);
     }
   }
