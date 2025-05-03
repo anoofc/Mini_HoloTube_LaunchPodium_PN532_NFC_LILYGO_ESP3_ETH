@@ -19,6 +19,7 @@
 #include <BluetoothSerial.h>
 #include <Preferences.h>
 #include <Adafruit_PN532.h>
+#include <vector>
 #include "eth_properties.h"
 #include "esp_task_wdt.h"
 
@@ -37,11 +38,11 @@ bool cardPresesnt = false;
 
 uint8_t numTags       = 0;                            // Number of tags
 String removeCommand  = "";                           // Remove command
-String commands[MAX_TAGS];
-String tags[MAX_TAGS];            // Tag IDs
+std::vector<String> tags;
+std::vector<String> commands;
+std::vector<uint8_t> OSCMessageMode;
 String tagID          = "";       // Current tag ID
 String prevTagID      = "";       // Previous tag ID
-uint8_t OSCMessageMode[MAX_TAGS]; 
 String RemoveOSCMessageString = ""; // OSC message for tag removal
 
 const String HELP = "NFC PN532 - Firmware v1.0\n N<num> - Set number of tags. 'Eg: N10'\nT<index> - Set Last placed tag ID for index. Eg: T01\nC<index><command> - Set command for index. Eg: C01HELLO - Set HELLO command for index 1\nR<command> - Set Tag Remove command. Eg: RREMOVED - Set REMOVED command for tag remove. \n HELP - Show this help message\n\n";
@@ -70,7 +71,7 @@ void saveNetworkConfig() {
   saveIPAddress("out", outIp);
   preferences.putUInt("inPort", inPort); // Save input port
   preferences.putUInt("outPort", outPort); // Save output port
-  for (int i = 0; i < numTags; i++) { preferences.putUInt(("mode" + String(i)).c_str(), OSCMessageMode[i]);} // Save mode for each tag
+  for (int i = 0; i < numTags; i++) { if (i < OSCMessageMode.size()) { preferences.putUInt(("mode" + String(i)).c_str(), OSCMessageMode[i]);}} // Save mode for each tag
   preferences.end();
 }
 
@@ -82,7 +83,7 @@ void loadNetworkConfig() {
   outIp   = loadIPAddress("out", IPAddress(10, 255, 250, 129));
   inPort  = preferences.getUInt("inPort", 7001); // Load input port
   outPort = preferences.getUInt("outPort", 7000); // Load output port
-  for (int i = 0; i < numTags; i++) { OSCMessageMode[i] = preferences.getUInt(("mode" + String(i)).c_str(), 0); } // Load mode for each tag
+  for (int i = 0; i < numTags; i++) { if (i < OSCMessageMode.size()) { OSCMessageMode[i] = preferences.getUInt(("mode" + String(i)).c_str(), 0); } } // Load mode for each tag
   preferences.end();
 }
 
@@ -153,9 +154,11 @@ void readNFC(){
     cardPresesnt = false;
     if(DEBUG) {Serial.println("CARD REMOVED");}
     for (int i = 0; i < numTags; i++) {
-      if (prevTagID == tags[i]) {
-        Serial.println(); Serial.println(removeCommand);
-        return;
+      if (i < tags.size()) {
+        if (prevTagID == tags[i]) {
+          Serial.println(); Serial.println(removeCommand);
+          return;
+        }
       }
     }
   }
@@ -166,8 +169,10 @@ void saveConfig(){
   preferences.putUInt("numTags", numTags); // Save number of tags
   preferences.putString("removeCommand", removeCommand); // Save remove command
   for (int i = 0; i < numTags; i++) {
-    preferences.putString(("tag" + String(i)).c_str(), tags[i]); // Save tag ID
-    preferences.putString(("command" + String(i)).c_str(), commands[i]); // Save command for tag ID
+    if (i < tags.size()) {
+      preferences.putString(("tag" + String(i)).c_str(), tags[i]); // Save tag ID
+      preferences.putString(("command" + String(i)).c_str(), commands[i]); // Save command for tag ID
+    }
   }
   preferences.end(); // Close preferences
 }
@@ -177,23 +182,29 @@ void getConfig(){
   numTags = preferences.getUInt("numTags", 2); // Get number of tags
   removeCommand = preferences.getString("removeCommand", ""); // Get remove command
   for (int i = 0; i < numTags; i++) {
-    tags[i] = preferences.getString(("tag" + String(i)).c_str(), ""); // Get tag ID
-    commands[i] = preferences.getString(("command" + String(i)).c_str(), ""); // Get command for tag ID
+    if (i < tags.size()) {
+      tags[i] = preferences.getString(("tag" + String(i)).c_str(), ""); // Get tag ID
+      commands[i] = preferences.getString(("command" + String(i)).c_str(), ""); // Get command for tag ID
+    }
   }
   preferences.end(); // Close preferences
   if (DEBUG) {
     Serial.println("Number of tags: " + String(numTags));
     Serial.println("Remove command: " + removeCommand);
     for (int i = 0; i < numTags; i++) {
-      Serial.println("Tag ID " + String(i) + ": " + tags[i]);
-      Serial.println("Command for tag ID " + String(i) + ": " + commands[i]);
+      if (i < tags.size()) {
+        Serial.println("Tag ID " + String(i) + ": " + tags[i]);
+        Serial.println("Command for tag ID " + String(i) + ": " + commands[i]);
+      }
     }
   }
   SerialBT.println("Number of tags: " + String(numTags));
   SerialBT.println("Remove command: " + removeCommand);
   for (int i = 0; i < numTags; i++) {
-    SerialBT.println("Tag ID " + String(i) + ": " + tags[i]);
-    SerialBT.println("Command for tag ID " + String(i) + ": " + commands[i]);
+    if (i < tags.size()) {
+      SerialBT.println("Tag ID " + String(i) + ": " + tags[i]);
+      SerialBT.println("Command for tag ID " + String(i) + ": " + commands[i]);
+    }
   }
 
   SerialBT.printf("Input port: %d\n", inPort);
@@ -251,13 +262,16 @@ void processData(String data) {
   if (data.startsWith("N")) {
     numTags = data.substring(1, data.length()).toInt();
     if (numTags > 20) numTags = 10;                   // Ensure numTags does not exceed array bounds
+    tags.resize(numTags, "");
+    commands.resize(numTags, "");
+    OSCMessageMode.resize(numTags, 0);
     saveConfig();
     SerialBT.println("Number of tags set to: " + String(numTags));
     Serial.println("Number of tags set to: " + String(numTags));
     return;
   } else if (data.startsWith("T")) {
     int index = data.substring(1, data.length()).toInt() - 1;
-    if (index >= 0 && index < 20) {
+    if (index >= 0 && index < numTags) {
       tags[index] = prevTagID;
     }
     saveConfig();
@@ -266,7 +280,7 @@ void processData(String data) {
     return;
   } else if (data.startsWith("C")) {
     int index = data.substring(1, data.length()).toInt() - 1;
-    if (index >= 0 && index < 20) {
+    if (index >= 0 && index < numTags) {
       commands[index] = data.substring(3, data.length());
     }
     saveConfig();
@@ -312,6 +326,7 @@ void WiFiEvent(WiFiEvent_t event) {
       break;
     case SYSTEM_EVENT_ETH_DISCONNECTED:
       Serial.println("ETH Disconnected");
+      ESP.restart(); // Restart ESP32 on disconnection
       break;
     case SYSTEM_EVENT_ETH_STOP:
       Serial.println("ETH Stopped");
@@ -358,8 +373,10 @@ void loadConfig(){
   numTags = preferences.getUInt("numTags", 2); // Get number of tags
   removeCommand = preferences.getString("removeCommand", ""); // Get remove command
   for (int i = 0; i < numTags; i++) {
-    tags[i] = preferences.getString(("tag" + String(i)).c_str(), ""); // Get tag ID
-    commands[i] = preferences.getString(("command" + String(i)).c_str(), ""); // Get command for tag ID
+    if (i < tags.size()) {
+      tags[i] = preferences.getString(("tag" + String(i)).c_str(), ""); // Get tag ID
+      commands[i] = preferences.getString(("command" + String(i)).c_str(), ""); // Get command for tag ID
+    }
   }
   preferences.end(); // Close preferences
 }
