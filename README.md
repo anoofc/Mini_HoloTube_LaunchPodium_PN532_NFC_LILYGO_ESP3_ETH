@@ -38,11 +38,12 @@ Use cases include interactive installations, holobox control, multimedia trigger
 
 ## 🛠️ Features
 
-- Ethernet-based OSC output
-- Bluetooth Serial Configuration interface
-- Dynamic NFC tag management
-- Configurable tag commands and OSC routes
-- Persistent configuration storage via NVS Preferences
+- Ethernet-based OSC output with configurable IP and ports
+- Bluetooth Serial configuration interface (no need to reflash)
+- Tag removal detection and custom command trigger
+- Watchdog-based auto-recovery for hangs or disconnection
+- Persistent configuration via NVS flash
+- Dynamic NFC tag assignment using `std::vector`
 
 ---
 
@@ -67,8 +68,9 @@ Use cases include interactive installations, holobox control, multimedia trigger
 ```cpp
 setup():
  ├── Serial & Bluetooth initialized
- ├── Preferences (NVS) loaded
- ├── NFC (PN532) initialized
+ ├── Watchdog initialized
+ ├── Preferences loaded
+ ├── NFC initialized
  ├── Ethernet initialized
 ```
 
@@ -78,7 +80,8 @@ setup():
 
 ```cpp
 loop():
- ├── readNFC() – Scan for new tags
+ ├── Feed watchdog
+ ├── readNFC() – Scan for new tags or removals
  ├── readBTSerial() – Accept commands via Bluetooth
 ```
 
@@ -91,7 +94,6 @@ loop():
 ```cpp
 timeCodeOSCSend(mode);
 ```
-
 Sends:
 ```
 /modeX [int]
@@ -100,18 +102,18 @@ Sends:
 ### When a tag is removed:
 
 ```
-Serial.println(removeCommand); // Only Serial, not OSC
+Serial.println(removeCommand); // For logging or triggering externally
 ```
 
 ---
 
 ## 🎮 Bluetooth Configuration Commands
 
-Send via Bluetooth terminal like Serial Bluetooth Terminal:
+Send via Bluetooth (e.g., Serial Bluetooth Terminal):
 
 | Command | Description |
 |---------|-------------|
-| `HELP` | Show command list |
+| `HELP` | Show help commands |
 | `N<num>` | Set number of NFC tags (max 20) |
 | `T<index>` | Assign last scanned tag to index |
 | `C<index><command>` | Set command for tag index |
@@ -122,75 +124,45 @@ Send via Bluetooth terminal like Serial Bluetooth Terminal:
 | `SET_OUTIP <ip>` | Set destination OSC IP |
 | `SET_INPORT <port>` | Set local UDP port |
 | `SET_OUTPORT <port>` | Set destination UDP port |
-| `SET_MODE <index><value>` | Set OSC message mode for tag |
-| `IP` | Show current IP |
-| `MAC` | Show MAC address |
-| `GET` | Get current config summary |
-
-> 🟢 Example:
-```
-SET_IP 192.168.0.10
-SET_OUTIP 192.168.0.100
-N3
-T1
-C1HELLO
-SET_MODE 01 2
-```
+| `SET_MODE <index><value>` | Set OSC mode value for tag |
+| `IP` | Print current IP |
+| `MAC` | Print MAC address |
+| `GET` | Print entire config summary |
 
 ---
 
-## 💾 Configuration Persistence
+## 💾 Persistent Storage (NVS)
 
-Data is stored in NVS under the `RFID` namespace:
-
-| Data | Key Format |
-|------|-------------|
-| IP, Subnet, Gateway | `ip0`, `ip1`, ... |
-| Tag IDs | `tag0`, `tag1`, ... |
-| Commands | `command0`, `command1`, ... |
-| OSC Modes | `mode0`, `mode1`, ... |
-
----
-
-## 📡 OSC Message Format
-
-### Tag Detected:
-```
-Address: /modeX
-Data: [int]
-```
-
-### Tag Removed:
-```
-Printed via Serial only: <removeCommand>
-```
+| Key | Description |
+|-----|-------------|
+| `numTags` | Number of stored tags |
+| `tagX`, `commandX`, `modeX` | X-th tag ID, command, OSC mode |
+| `ip0-3`, `sub0-3`, `gw0-3`, `out0-3` | IP settings |
+| `inPort`, `outPort` | UDP ports |
 
 ---
 
 ## 🧪 Debugging & Monitoring
 
-- Serial monitor @ `115200 bps`
-- Bluetooth device name: **Mini Holotube**
-- Enable/Disable debug prints via `#define DEBUG 1`
+- Monitor via Serial @ `115200`
+- Bluetooth Name: **Mini Holotube**
+- `#define DEBUG 1` prints extra info (tag ID, config, etc.)
 
 ---
 
-## 📋 Best Practices
+## 💡 Best Practices
 
-- Save configuration before power-off using `SAVE`-related commands
-- Use `GET` regularly to verify setup
-- Cap `numTags` to 20 to avoid memory overflows
-- Default network config (if not stored):
-  - IP: `10.255.250.150`
-  - Subnet: `255.255.254.0`
-  - Gateway: `10.255.250.1`
-  - Out IP: `10.255.250.129`
+- Use `GET` to verify current settings
+- Send `N<num>` before assigning tags/commands
+- Use watchdog + restart logic to recover from issues
+- Ethernet disconnection auto-triggers `ESP.restart()`
+- NFC initialization failure also triggers auto-restart
 
 ---
 
-## 🧠 Future Enhancements
+## 🧠 Future Roadmap
 
-- Add OSC message on tag removal
-- Add Web Serial or OTA configuration
-- Use MDNS for device discovery
-- Expand tag capacity with dynamic memory
+- Add Web-based config interface
+- Send OSC on tag **removal**
+- MQTT/OSC hybrid support
+- Remote OTA via Web or Bluetooth
