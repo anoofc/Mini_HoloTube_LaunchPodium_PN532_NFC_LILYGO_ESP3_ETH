@@ -114,8 +114,9 @@ void loadNetworkConfig() {
 }
 
 void oscSend(uint8_t column, int value) {
-  char address[20];
+  char address[40];  // increase buffer size
   snprintf(address, sizeof(address), "/composition/columns/%d/connect", column);
+  if (DEBUG){ Serial.println(address); } // Debug: print the address to Serial
   OSCMessage msg(address);
   msg.add(value);
   Udp.beginPacket(outIp, outPort);
@@ -139,6 +140,7 @@ void processTagID(String tagID) {
     if (i < tags.size()) {
       if (tagID == tags[i]) {
         timeCodeOSCSend(OSCMessageMode[i]);
+        oscSend(i+1, 1);
         Serial.println("TAG ID: " + tagID + " - " + commands[i]);
         SerialBT.println("TAG ID: " + tagID + " - " + commands[i]);
         showColorFromArray(1); 
