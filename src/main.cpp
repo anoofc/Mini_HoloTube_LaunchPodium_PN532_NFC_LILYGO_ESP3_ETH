@@ -6,6 +6,9 @@
 #define I2C_SDA 14  // Example: GPIO21
 #define I2C_SCL 32  // Example: GPIO22
 
+#define LED_PIN 14
+#define NUM_PIXELS 21
+
 #define PN532_IRQ   (2)
 #define PN532_RESET (3)  // Not connected by default on the NFC Shield
 
@@ -17,22 +20,32 @@
 #include <BluetoothSerial.h>
 #include <Preferences.h>
 #include <Adafruit_PN532.h>
+#include <Adafruit_NeoPixel.h>
 #include <vector>
 #include "eth_properties.h"
 #include "esp_task_wdt.h"
 
-
 BluetoothSerial SerialBT; // Bluetooth Serial
 Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET);  // Choose your IRQ and RESET pins
+Adafruit_NeoPixel strip(NUM_PIXELS, LED_PIN, NEO_GRB + NEO_KHZ800); // NeoPixel strip on GPIO 13
 Preferences preferences;  // Preferences for storing data
 WiFiUDP Udp;
 
 IPAddress ip, subnet, gateway, outIp;
 uint16_t inPort = 7001;
 uint16_t outPort = 7000;
+uint32_t colors[][3] = {
+            {255,0,0},   // Red
+            {0,255,0},   // Green
+            {255,255,0},   // Blue
+            {255,255,0}, // Yellow
+            {255,0,255}, // Magenta
+            {0,255,255}  // Cyan
+            };
 
 bool success      = false;
 bool cardPresesnt = false;
+
 
 uint8_t numTags       = 0;                            // Number of tags
 String removeCommand  = "";                           // Remove command
@@ -44,6 +57,21 @@ String prevTagID      = "";       // Previous tag ID
 String RemoveOSCMessageString = ""; // OSC message for tag removal
 
 const String HELP = "NFC PN532 - Firmware v1.0\n N<num> - Set number of tags. 'Eg: N10'\nT<index> - Set Last placed tag ID for index. Eg: T01\nC<index><command> - Set command for index. Eg: C01HELLO - Set HELLO command for index 1\nR<command> - Set Tag Remove command. Eg: RREMOVED - Set REMOVED command for tag remove. \n HELP - Show this help message\n\n";
+
+
+void showColor(uint32_t color) {
+  for (int i = 0; i < strip.numPixels(); i++) { strip.setPixelColor(i, color);  }
+  strip.show();
+}
+
+void showColorFromArray(int index) {
+  if (index >= 0 && index < sizeof(colors) / sizeof(colors[0])) {
+  uint32_t color = strip.Color(colors[index][0], colors[index][1], colors[index][2]);
+  showColor(color);
+  } else {
+  if (DEBUG) { Serial.println("Invalid color index.");}
+  }
+}
 
 void saveIPAddress(const char* keyPrefix, IPAddress address) {
   for (int i = 0; i < 4; i++) {
@@ -113,6 +141,7 @@ void processTagID(String tagID) {
         timeCodeOSCSend(OSCMessageMode[i]);
         Serial.println("TAG ID: " + tagID + " - " + commands[i]);
         SerialBT.println("TAG ID: " + tagID + " - " + commands[i]);
+        showColorFromArray(1); 
         return;
       }
     }
@@ -127,7 +156,6 @@ void readNFC(){
   // Wait for an NTAG203 card.  When one is found 'uid' will be populated with
   // the UID, and uidLength will indicate the size of the UUID (normally 7)
   success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, TIMEOUT);
-
   // NO CHANGE IN CARD
   if (success && cardPresesnt){ return; }
   // WAITING FOR NEW CARD
@@ -159,6 +187,7 @@ void readNFC(){
       if (i < tags.size()) {
         if (prevTagID == tags[i]) {
           Serial.println(); Serial.println(removeCommand);
+          showColorFromArray(2);
           return;
         }
       }
@@ -386,9 +415,17 @@ void loadConfig(){
   preferences.end(); // Close preferences
 }
 
+void stripInit() {
+  strip.begin(); // Initialize the NeoPixel strip
+  strip.show(); // Initialize all pixels to 'off'
+  strip.setBrightness(255); // Set brightness to 50 (0-255)
+  showColorFromArray(2);
+}
+
 void setup() {
   Serial.begin(115200);
   SerialBT.begin("Mini Holotube");
+  stripInit();
   // Initialize WDT (8 seconds timeout)
   esp_task_wdt_init(WD_TIMEOUT, true); // timeout in seconds, panic = true
   esp_task_wdt_add(NULL);     // Add current thread to WDT
@@ -396,6 +433,7 @@ void setup() {
   loadNetworkConfig();
   nfcInit();
   ethInit();
+  
 
 }
 
