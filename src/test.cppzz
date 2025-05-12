@@ -1,0 +1,35 @@
+#define DEBUG     1
+
+#define DEBOUNCE_TIMEOUT 500 // milliseconds
+
+#define RST_SWITCH  4
+#define TRIG_SWITCH 13
+
+#include <Arduino.h>  
+
+uint32_t lastMillis = 0;
+
+void readSwitches() {
+  if (millis() - lastMillis < DEBOUNCE_TIMEOUT ){ return; } // Debounce delay
+  if (digitalRead(RST_SWITCH) == HIGH) {
+    if (DEBUG) { Serial.println("RST_SWITCH pressed"); }
+    lastMillis = millis(); // Reset lastMillis to current time
+  } if (digitalRead(TRIG_SWITCH) == HIGH) {
+    if (DEBUG) { Serial.println("TRIG_SWITCH pressed"); }
+    lastMillis = millis(); // Reset lastMillis to current time
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(RST_SWITCH, INPUT_PULLUP);
+  pinMode(TRIG_SWITCH, INPUT_PULLUP);
+}
+
+void loop() {
+  readSwitches();
+  // Serial.print(digitalRead(RST_SWITCH));
+  // Serial.print("\t");
+  // Serial.println(digitalRead(TRIG_SWITCH));
+  // delay(50);
+}

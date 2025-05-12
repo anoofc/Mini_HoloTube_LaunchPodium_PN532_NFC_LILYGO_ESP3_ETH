@@ -1,13 +1,16 @@
-#define DEBUG     1
+#define DEBUG             1
 
-#define TIMEOUT     100
-#define WD_TIMEOUT  8       // seconds  
+#define TIMEOUT           100
+#define DEBOUNCE_TIMEOUT  500 // milliseconds
+#define WD_TIMEOUT        8       // seconds  
 // Define custom I2C pins
-#define I2C_SDA 14  // Example: GPIO21
-#define I2C_SCL 32  // Example: GPIO22
+#define I2C_SDA   14  // Example: GPIO21
+#define I2C_SCL   32  // Example: GPIO22
 
-#define LED_PIN 14
-#define NUM_PIXELS 21
+#define LED_PIN     14
+#define NUM_PIXELS  21
+#define RST_SWITCH  4
+#define TRIG_SWITCH 13
 
 #define PN532_IRQ   (2)
 #define PN532_RESET (3)  // Not connected by default on the NFC Shield
@@ -34,6 +37,7 @@ WiFiUDP Udp;
 IPAddress ip, subnet, gateway, outIp;
 uint16_t inPort = 7001;
 uint16_t outPort = 7000;
+uint32_t lastMillis = 0;  
 uint32_t colors[][3] = {
             {255,0,0},   // Red
             {0,255,0},   // Green
@@ -246,7 +250,6 @@ void getConfig(){
   SerialBT.printf("Subnet: %s\n", subnet.toString().c_str());
   SerialBT.printf("Gateway: %s\n", gateway.toString().c_str());
   SerialBT.printf("OutIP: %s\n", outIp.toString().c_str());
-
 }
 
 void processData(String data) {
@@ -344,6 +347,17 @@ void readBTSerial(){
   }
 }
 
+void readSwitches() {
+  if (millis() - lastMillis < DEBOUNCE_TIMEOUT ){ return; } // Debounce delay
+  if (digitalRead(RST_SWITCH) == LOW) {
+    oscSend(numTags + 1, 1);
+    if (DEBUG) { Serial.println("RST_SWITCH pressed"); }
+  } if (digitalRead(TRIG_SWITCH) == LOW) {
+    oscSend(numTags + 2, 1);
+    if (DEBUG) { Serial.println("TRIG_SWITCH pressed"); }
+  }
+}
+
 void WiFiEvent(WiFiEvent_t event) {
   switch (event) {
     case SYSTEM_EVENT_ETH_START:
@@ -427,6 +441,8 @@ void stripInit() {
 void setup() {
   Serial.begin(115200);
   SerialBT.begin("Mini Holotube");
+  pinMode(RST_SWITCH, INPUT_PULLUP);
+  pinMode(TRIG_SWITCH, INPUT_PULLUP);
   stripInit();
   // Initialize WDT (8 seconds timeout)
   esp_task_wdt_init(WD_TIMEOUT, true); // timeout in seconds, panic = true
@@ -435,8 +451,6 @@ void setup() {
   loadNetworkConfig();
   nfcInit();
   ethInit();
-  
-
 }
 
 void loop() {
