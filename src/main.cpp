@@ -1,8 +1,8 @@
-#define DEBUG             1
+#define DEBUG             0
 
 #define TIMEOUT           100
-#define DEBOUNCE_TIMEOUT  500 // milliseconds
-#define WD_TIMEOUT        8       // seconds  
+#define DEBOUNCE_TIMEOUT  1000 // milliseconds
+#define WD_TIMEOUT        30       // seconds  
 // Define custom I2C pins
 #define I2C_SDA   14  // Example: GPIO21
 #define I2C_SCL   32  // Example: GPIO22
@@ -38,6 +38,7 @@ IPAddress ip, subnet, gateway, outIp;
 uint16_t inPort = 7001;
 uint16_t outPort = 7000;
 uint32_t lastMillis = 0;  
+uint32_t resetMillis = 0; // Last time WDT was reset
 uint32_t colors[][3] = {
             {255,0,0},   // Red
             {0,255,0},   // Green
@@ -349,11 +350,13 @@ void readBTSerial(){
 
 void readSwitches() {
   if (millis() - lastMillis < DEBOUNCE_TIMEOUT ){ return; } // Debounce delay
-  if (digitalRead(RST_SWITCH) == LOW) {
+  if (digitalRead(RST_SWITCH) == HIGH) {
     oscSend(numTags + 1, 1);
+    lastMillis = millis(); // Update lastMillis to current time
     if (DEBUG) { Serial.println("RST_SWITCH pressed"); }
-  } if (digitalRead(TRIG_SWITCH) == LOW) {
+  } if (digitalRead(TRIG_SWITCH) == HIGH) {
     oscSend(numTags + 2, 1);
+    lastMillis = millis(); // Update lastMillis to current time
     if (DEBUG) { Serial.println("TRIG_SWITCH pressed"); }
   }
 }
@@ -373,7 +376,7 @@ void WiFiEvent(WiFiEvent_t event) {
       break;
     case SYSTEM_EVENT_ETH_DISCONNECTED:
       Serial.println("ETH Disconnected");
-      ESP.restart(); // Restart ESP32 on disconnection
+      ESP.restart(); // Restart ESP32
       break;
     case SYSTEM_EVENT_ETH_STOP:
       Serial.println("ETH Stopped");
@@ -431,6 +434,7 @@ void loadConfig(){
   preferences.end(); // Close preferences
 }
 
+
 void stripInit() {
   strip.begin(); // Initialize the NeoPixel strip
   strip.show(); // Initialize all pixels to 'off'
@@ -457,4 +461,5 @@ void loop() {
   esp_task_wdt_reset(); // Feed the watchdog
   readNFC();
   readBTSerial();
+  readSwitches();
 }
