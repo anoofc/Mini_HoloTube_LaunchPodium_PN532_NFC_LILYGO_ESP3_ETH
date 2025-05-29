@@ -2,7 +2,7 @@
 
 #define TIMEOUT           100
 #define DEBOUNCE_TIMEOUT  1000 // milliseconds
-#define WD_TIMEOUT        30       // seconds  
+#define WD_TIMEOUT        60       // seconds  
 // Define custom I2C pins
 #define I2C_SDA   14  // Example: GPIO21
 #define I2C_SCL   32  // Example: GPIO22
@@ -26,7 +26,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <vector>
 #include "eth_properties.h"
-#include "esp_task_wdt.h"
+// #include "esp_task_wdt.h"
 
 BluetoothSerial SerialBT; // Bluetooth Serial
 Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET);  // Choose your IRQ and RESET pins
@@ -132,7 +132,8 @@ void oscSend(uint8_t column, int value) {
 
 void timeCodeOSCSend(uint8_t mode){
   char address[20];
-  snprintf(address, sizeof(address), "/mode%d", mode);
+  // snprintf(address, sizeof(address), "/mode%d", mode);
+  snprintf(address, sizeof(address), "run V1");
   OSCMessage msg(address);
   Udp.beginPacket(outIp, outPort);
   msg.send(Udp);
@@ -140,12 +141,19 @@ void timeCodeOSCSend(uint8_t mode){
   msg.empty();
 }
 
+void timeCodeUDPSend(String messagestr) {
+  const char* message = messagestr.c_str();
+  Udp.beginPacket(outIp, outPort);
+  Udp.write((const uint8_t*)message, strlen(message));
+  Udp.endPacket();
+} 
+
 void processTagID(String tagID) {
   for (int i = 0; i < numTags; i++) {
     if (i < tags.size()) {
       if (tagID == tags[i]) {
-        timeCodeOSCSend(OSCMessageMode[i]);
-        oscSend(i+1, 1);
+        timeCodeUDPSend("run V1");
+        // oscSend(i+1, 1);
         Serial.println("TAG ID: " + tagID + " - " + commands[i]);
         SerialBT.println("TAG ID: " + tagID + " - " + commands[i]);
         showColorFromArray(1); 
@@ -351,11 +359,11 @@ void readBTSerial(){
 void readSwitches() {
   if (millis() - lastMillis < DEBOUNCE_TIMEOUT ){ return; } // Debounce delay
   if (digitalRead(RST_SWITCH) == HIGH) {
-    oscSend(numTags + 1, 1);
+    timeCodeUDPSend("kill V1");
     lastMillis = millis(); // Update lastMillis to current time
     if (DEBUG) { Serial.println("RST_SWITCH pressed"); }
   } if (digitalRead(TRIG_SWITCH) == HIGH) {
-    oscSend(numTags + 2, 1);
+    timeCodeUDPSend("run V1");
     lastMillis = millis(); // Update lastMillis to current time
     if (DEBUG) { Serial.println("TRIG_SWITCH pressed"); }
   }
@@ -376,7 +384,8 @@ void WiFiEvent(WiFiEvent_t event) {
       break;
     case SYSTEM_EVENT_ETH_DISCONNECTED:
       Serial.println("ETH Disconnected");
-      ESP.restart(); // Restart ESP32
+      Serial.println("Restarting ESP32... ERROR: No Ethernet connection");
+      ESP.restart(); // Restart ESP32 if disconnected
       break;
     case SYSTEM_EVENT_ETH_STOP:
       Serial.println("ETH Stopped");
@@ -391,7 +400,7 @@ void ethInit() {
   ETH.config(ip, gateway, subnet);
   WiFi.onEvent(WiFiEvent);
   Udp.begin(inPort);
-  delay(5000); // Wait for the Ethernet to initialize
+  delay(10); // Wait for the Ethernet to initialize
   Serial.println("ETH Initialized");
   Serial.printf("ETH IP: %s\n", ETH.localIP().toString().c_str());
   Serial.printf("ETH MAC: %s\n", ETH.macAddress().c_str());
@@ -404,8 +413,9 @@ void nfcInit(){
   uint32_t versiondata = nfc.getFirmwareVersion();
   if (!versiondata) {
     Serial.println("PN532 not detected. Retrying...");
-    delay(5000);  // Retry after 5 seconds
-    ESP.restart(); // Or go back to loop
+    delay(10);  // Retry after 5 seconds
+    Serial.println("Restarting ESP32... ERROR: No PN532 detected");
+    ESP.restart(); // Restart ESP32 if PN532 not detected
   }
   
   if (DEBUG) {
@@ -449,8 +459,8 @@ void setup() {
   pinMode(TRIG_SWITCH, INPUT_PULLUP);
   stripInit();
   // Initialize WDT (8 seconds timeout)
-  esp_task_wdt_init(WD_TIMEOUT, true); // timeout in seconds, panic = true
-  esp_task_wdt_add(NULL);     // Add current thread to WDT
+  // esp_task_wdt_init(WD_TIMEOUT, true); // timeout in seconds, panic = true
+  // esp_task_wdt_add(NULL);     // Add current thread to WDT
   loadConfig();
   loadNetworkConfig();
   nfcInit();
@@ -458,7 +468,7 @@ void setup() {
 }
 
 void loop() {
-  esp_task_wdt_reset(); // Feed the watchdog
+  // esp_task_wdt_reset(); // Feed the watchdog
   readNFC();
   readBTSerial();
   readSwitches();
