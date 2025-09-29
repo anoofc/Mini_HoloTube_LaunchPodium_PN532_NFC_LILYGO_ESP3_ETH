@@ -3,7 +3,7 @@
 #define TIMEOUT     100
 #define WD_TIMEOUT  8       // seconds  
 // Define custom I2C pins
-#define I2C_SDA 14  // Example: GPIO21
+#define I2C_SDA 13  // Example: GPIO21
 #define I2C_SCL 32  // Example: GPIO22
 
 #define PN532_IRQ   (2)
@@ -86,7 +86,7 @@ void loadNetworkConfig() {
 }
 
 void oscSend(uint8_t column, int value) {
-  char address[20];
+  char address[64];
   snprintf(address, sizeof(address), "/composition/columns/%d/connect", column);
   OSCMessage msg(address);
   msg.add(value);
@@ -110,7 +110,8 @@ void processTagID(String tagID) {
   for (int i = 0; i < numTags; i++) {
     if (i < tags.size()) {
       if (tagID == tags[i]) {
-        timeCodeOSCSend(OSCMessageMode[i]);
+        // timeCodeOSCSend(OSCMessageMode[i]);
+        oscSend(i + 1, 1); // Send OSC message to connect column (1-based index)
         Serial.println("TAG ID: " + tagID + " - " + commands[i]);
         SerialBT.println("TAG ID: " + tagID + " - " + commands[i]);
         return;
@@ -357,6 +358,7 @@ void nfcInit(){
   if (!versiondata) {
     Serial.println("PN532 not detected. Retrying...");
     delay(5000);  // Retry after 5 seconds
+    Serial.println("Restarting...");
     ESP.restart(); // Or go back to loop
   }
   
@@ -390,8 +392,7 @@ void setup() {
   Serial.begin(115200);
   SerialBT.begin("Mini Holotube");
   // Initialize WDT (8 seconds timeout)
-  esp_task_wdt_init(WD_TIMEOUT, true); // timeout in seconds, panic = true
-  esp_task_wdt_add(NULL);     // Add current thread to WDT
+
   loadConfig();
   loadNetworkConfig();
   nfcInit();
@@ -400,7 +401,7 @@ void setup() {
 }
 
 void loop() {
-  esp_task_wdt_reset(); // Feed the watchdog
+
   readNFC();
   readBTSerial();
 }
