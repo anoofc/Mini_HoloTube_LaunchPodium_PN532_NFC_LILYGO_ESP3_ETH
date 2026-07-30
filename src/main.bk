@@ -1,0 +1,1142 @@
+#define DEBUG     1
+
+#define TIMEOUT     100
+#define WD_TIMEOUT  8       // seconds  
+// Define custom I2C pins
+#define I2C_SDA 13  // Example: GPIO21
+#define I2C_SCL 32  // Example: GPIO22
+
+#define LED_PIN_1    14
+#define LED_PIN_2    33
+#define LED_PIN_3    4
+
+#define PN532_IRQ   (2)
+#define PN532_RESET (3)  // Not connected by default on the NFC Shield
+
+#include <Wire.h>
+#include <Arduino.h>
+#include <OSCMessage.h>
+#include <ETH.h>
+#include <WiFiUdp.h>
+#include <BluetoothSerial.h>
+#include <Preferences.h>
+#include <Adafruit_PN532.h>
+#include <vector>
+#include "eth_properties.h"
+#include "esp_task_wdt.h"
+#include <WiFi.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <Adafruit_NeoPixel.h>
+
+BluetoothSerial SerialBT; // Bluetooth Serial
+Adafruit_PN532 nfc(PN532_IRQ, PN532_RESET);  // Choose your IRQ and RESET pins
+Preferences preferences;  // Preferences for storing data
+WiFiUDP Udp;
+
+//ESPNOW
+constexpr uint8_t ESPNOW_CHANNEL = 1;
+
+// Replace with the Wi-Fi STA MAC address of the receiving ESP32
+uint8_t espNowReceiverMac[] = {
+  0xD8, 0x3B, 0xDA, 0x44, 0xDC, 0xB4
+};
+
+bool espNowReady = false;
+
+struct EspNowMessage {
+  char command[32];
+  char tagID[24];
+  uint8_t tagIndex;
+};
+
+// END ESP NOW
+
+//NEOPIXEL 
+
+// ==================== NEOPIXEL CONFIGURATION ====================
+
+struct NeoPixelConfig {
+  uint8_t r1;
+  uint8_t g1;
+  uint8_t b1;
+
+  uint8_t r2;
+  uint8_t g2;
+  uint8_t b2;
+
+  uint8_t r3;
+  uint8_t g3;
+  uint8_t b3;
+
+  uint8_t brightness;
+
+  // Delay between adding consecutive pixels.
+  uint32_t stepIntervalMs;
+
+  // Delay between starting strip 1, strip 2 and strip 3.
+  uint32_t stripStartDelayMs;
+};
+
+NeoPixelConfig neoConfig = {
+  255, 0, 0,       // Strip 1 default: red
+  0, 255, 0,       // Strip 2 default: green
+  0, 0, 255,       // Strip 3 default: blue
+  255,             // Brightness
+  10,              // Pixel step interval
+  1000             // Delay between strips
+};
+
+constexpr uint16_t NUMPIXELS = 300;
+
+Adafruit_NeoPixel strip1(
+  NUMPIXELS,
+  LED_PIN_1,
+  NEO_GRB + NEO_KHZ800
+);
+
+Adafruit_NeoPixel strip2(
+  NUMPIXELS,
+  LED_PIN_2,
+  NEO_GRB + NEO_KHZ800
+);
+
+Adafruit_NeoPixel strip3(
+  NUMPIXELS,
+  LED_PIN_3,
+  NEO_GRB + NEO_KHZ800
+);
+
+// Non-blocking animation state.
+bool neoAnimationRunning = false;
+uint32_t neoAnimationStartMs = 0;
+uint32_t neoLastUpdateMs = 0;
+
+uint16_t strip1PixelIndex = 0;
+uint16_t strip2PixelIndex = 0;
+uint16_t strip3PixelIndex = 0;
+
+//NEOPIXEL END
+
+IPAddress ip, subnet, gateway, outIp;
+uint16_t inPort = 7001;
+uint16_t outPort = 7000;
+
+bool success      = false;
+bool cardPresesnt = false;
+
+uint8_t numTags       = 0;                            // Number of tags
+String removeCommand  = "";                           // Remove command
+std::vector<String> tags;
+std::vector<String> commands;
+std::vector<uint8_t> OSCMessageMode;
+String tagID          = "";       // Current tag ID
+String prevTagID      = "";       // Previous tag ID
+String RemoveOSCMessageString = ""; // OSC message for tag removal
+
+const String HELP = "NFC PN532 - Firmware v1.0\n N<num> - Set number of tags. 'Eg: N10'\nT<index> - Set Last placed tag ID for index. Eg: T01\nC<index><command> - Set command for index. Eg: C01HELLO - Set HELLO command for index 1\nR<command> - Set Tag Remove command. Eg: RREMOVED - Set REMOVED command for tag remove. \n HELP - Show this help message\n\n";
+
+
+// ESPNOOW INITIALIZE
+
+bool espNowInit()
+{
+  /*
+   * ESP-NOW uses the Wi-Fi radio.
+   * It does not require connection to a Wi-Fi router.
+   */
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  esp_err_t channelResult =
+      esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+  if (channelResult != ESP_OK) {
+    Serial.printf(
+      "Failed to set ESP-NOW channel: %s\n",
+      esp_err_to_name(channelResult)
+    );
+    return false;
+  }
+
+  esp_err_t initResult = esp_now_init();
+
+  if (initResult != ESP_OK) {
+    Serial.printf(
+      "ESP-NOW initialization failed: %s\n",
+      esp_err_to_name(initResult)
+    );
+    return false;
+  }
+
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(
+    peerInfo.peer_addr,
+    espNowReceiverMac,
+    sizeof(espNowReceiverMac)
+  );
+
+  peerInfo.channel = ESPNOW_CHANNEL;
+  peerInfo.ifidx = WIFI_IF_STA;
+  peerInfo.encrypt = false;
+
+  if (!esp_now_is_peer_exist(espNowReceiverMac)) {
+    esp_err_t peerResult = esp_now_add_peer(&peerInfo);
+
+    if (peerResult != ESP_OK) {
+      Serial.printf(
+        "Failed to add ESP-NOW peer: %s\n",
+        esp_err_to_name(peerResult)
+      );
+
+      esp_now_deinit();
+      return false;
+    }
+  }
+
+  espNowReady = true;
+
+  Serial.println("ESP-NOW initialized");
+  Serial.printf("ESP-NOW channel: %u\n", ESPNOW_CHANNEL);
+  Serial.printf("Sender Wi-Fi MAC: %s\n", WiFi.macAddress().c_str());
+
+  return true;
+}
+
+// ESPNOW INIT END
+
+// ESPOW SEND MESSAGE
+bool sendEspNowCommand(
+    const String& command,
+    const String& scannedTagID,
+    uint8_t tagIndex)
+{
+  if (!espNowReady) {
+    Serial.println("ESP-NOW is not initialized");
+    return false;
+  }
+
+  if (command.isEmpty()) {
+    Serial.println("ESP-NOW command is empty");
+    return false;
+  }
+
+  EspNowMessage message = {};
+
+  command.toCharArray(
+    message.command,
+    sizeof(message.command)
+  );
+
+  scannedTagID.toCharArray(
+    message.tagID,
+    sizeof(message.tagID)
+  );
+
+  message.tagIndex = tagIndex;
+
+  esp_err_t result = esp_now_send(
+    espNowReceiverMac,
+    reinterpret_cast<const uint8_t*>(&message),
+    sizeof(message)
+  );
+
+  if (result == ESP_OK) {
+    Serial.printf(
+      "ESP-NOW queued: tag=%s index=%u command=%s\n",
+      message.tagID,
+      message.tagIndex,
+      message.command
+    );
+
+    return true;
+  }
+
+  Serial.printf(
+    "ESP-NOW send error: %s\n",
+    esp_err_to_name(result)
+  );
+
+  return false;
+}
+// ESPNOW SEND MESSAGE END
+
+
+//NEOPIXEL FUNCTIONS
+
+
+
+void clearNeoPixels()
+{
+
+  strip1.clear();
+  strip2.clear();
+  strip3.clear();
+
+  strip1.show();
+  strip2.show();
+  strip3.show();
+}
+
+void startNeoPixelAnimation()
+{
+  clearNeoPixels();
+
+  strip1.setBrightness(neoConfig.brightness);
+  strip2.setBrightness(neoConfig.brightness);
+  strip3.setBrightness(neoConfig.brightness);
+
+  Serial.println("NeoPixel animation started");
+
+  // stripStartDelayMs is already in milliseconds.
+  delay(neoConfig.stripStartDelayMs);
+
+  for (uint16_t i = 0; i < NUMPIXELS; i++)
+  {
+    strip1.setPixelColor(
+      i,
+      strip1.Color(
+        neoConfig.r1,
+        neoConfig.g1,
+        neoConfig.b1
+      )
+    );
+
+    strip2.setPixelColor(
+      i,
+      strip2.Color(
+        neoConfig.r2,
+        neoConfig.g2,
+        neoConfig.b2
+      )
+    );
+
+    strip3.setPixelColor(
+      i,
+      strip3.Color(
+        neoConfig.r3,
+        neoConfig.g3,
+        neoConfig.b3
+      )
+    );
+
+    strip1.show();
+    strip2.show();
+    strip3.show();
+
+    delay(neoConfig.stepIntervalMs);
+  }
+
+  Serial.println("NeoPixel animation completed");
+}
+
+// NEOPIXEL FUNCTIONS END
+
+
+void saveIPAddress(const char* keyPrefix, IPAddress address) {
+  for (int i = 0; i < 4; i++) {
+    String key = String(keyPrefix) + i;
+    preferences.putUInt(key.c_str(), address[i]);
+  }
+}
+
+IPAddress loadIPAddress(const char* keyPrefix, IPAddress defaultIP) {
+  IPAddress result;
+  for (int i = 0; i < 4; i++) {
+    String key = String(keyPrefix) + i;
+    result[i] = preferences.getUInt(key.c_str(), defaultIP[i]);
+  }
+  return result;
+}
+
+
+void saveNeoPixelConfig()
+{
+  preferences.begin("NEOPIXEL", false);
+
+  preferences.putUChar("r1", neoConfig.r1);
+  preferences.putUChar("g1", neoConfig.g1);
+  preferences.putUChar("b1", neoConfig.b1);
+
+  preferences.putUChar("r2", neoConfig.r2);
+  preferences.putUChar("g2", neoConfig.g2);
+  preferences.putUChar("b2", neoConfig.b2);
+
+  preferences.putUChar("r3", neoConfig.r3);
+  preferences.putUChar("g3", neoConfig.g3);
+  preferences.putUChar("b3", neoConfig.b3);
+
+  preferences.putUChar("bright", neoConfig.brightness);
+  preferences.putUInt("speed", neoConfig.stepIntervalMs);
+  preferences.putUInt("delay", neoConfig.stripStartDelayMs);
+
+  preferences.end();
+}
+
+void loadNeoPixelConfig()
+{
+  preferences.begin("NEOPIXEL", true);
+
+  neoConfig.r1 = preferences.getUChar("r1", 255);
+  neoConfig.g1 = preferences.getUChar("g1", 0);
+  neoConfig.b1 = preferences.getUChar("b1", 0);
+
+  neoConfig.r2 = preferences.getUChar("r2", 0);
+  neoConfig.g2 = preferences.getUChar("g2", 255);
+  neoConfig.b2 = preferences.getUChar("b2", 0);
+
+  neoConfig.r3 = preferences.getUChar("r3", 0);
+  neoConfig.g3 = preferences.getUChar("g3", 0);
+  neoConfig.b3 = preferences.getUChar("b3", 255);
+
+  neoConfig.brightness =
+    preferences.getUChar("bright", 255);
+
+  neoConfig.stepIntervalMs =
+    preferences.getUInt("speed", 10);
+
+  neoConfig.stripStartDelayMs =
+    preferences.getUInt("delay", 1000);
+
+  preferences.end();
+
+  // Protect against corrupt or unreasonable saved values.
+  neoConfig.stepIntervalMs =
+    constrain(neoConfig.stepIntervalMs, 1UL, 10000UL);
+
+  neoConfig.stripStartDelayMs =
+    constrain(neoConfig.stripStartDelayMs, 0UL, 60000UL);
+}
+
+void resetNeoPixelConfig()
+{
+  neoConfig.r1 = 255;
+  neoConfig.g1 = 0;
+  neoConfig.b1 = 0;
+
+  neoConfig.r2 = 0;
+  neoConfig.g2 = 255;
+  neoConfig.b2 = 0;
+
+  neoConfig.r3 = 0;
+  neoConfig.g3 = 0;
+  neoConfig.b3 = 255;
+
+  neoConfig.brightness = 255;
+  neoConfig.stepIntervalMs = 10;
+  neoConfig.stripStartDelayMs = 1000;
+
+  saveNeoPixelConfig();
+}
+
+void printNeoPixelConfig(Stream& output)
+{
+  output.println();
+  output.println("===== NEOPIXEL CONFIG =====");
+
+  output.printf(
+    "Strip 1 RGB: %u,%u,%u\n",
+    neoConfig.r1,
+    neoConfig.g1,
+    neoConfig.b1
+  );
+
+  output.printf(
+    "Strip 2 RGB: %u,%u,%u\n",
+    neoConfig.r2,
+    neoConfig.g2,
+    neoConfig.b2
+  );
+
+  output.printf(
+    "Strip 3 RGB: %u,%u,%u\n",
+    neoConfig.r3,
+    neoConfig.g3,
+    neoConfig.b3
+  );
+
+  output.printf(
+    "Brightness: %u\n",
+    neoConfig.brightness
+  );
+
+  output.printf(
+    "Step interval: %lu ms\n",
+    static_cast<unsigned long>(
+      neoConfig.stepIntervalMs
+    )
+  );
+
+  output.printf(
+    "Strip start delay: %lu ms\n",
+    static_cast<unsigned long>(
+      neoConfig.stripStartDelayMs
+    )
+  );
+
+  output.println("===========================");
+}
+
+void saveNetworkConfig() {
+  preferences.begin("RFID", false);
+  saveIPAddress("ip", ip);
+  saveIPAddress("sub", subnet);
+  saveIPAddress("gw", gateway);
+  saveIPAddress("out", outIp);
+  preferences.putUInt("inPort", inPort); // Save input port
+  preferences.putUInt("outPort", outPort); // Save output port
+  for (int i = 0; i < numTags; i++) { if (i < OSCMessageMode.size()) { preferences.putUInt(("mode" + String(i)).c_str(), OSCMessageMode[i]);}} // Save mode for each tag
+  preferences.end();
+}
+
+void loadNetworkConfig() {
+  preferences.begin("RFID", true);
+  ip      = loadIPAddress("ip",  IPAddress(192, 168, 1, 10));
+  subnet  = loadIPAddress("sub", IPAddress(255, 255, 255, 0));
+  gateway = loadIPAddress("gw",  IPAddress(192, 168, 1, 1));
+  outIp   = loadIPAddress("out", IPAddress(192, 168, 1, 100));
+  inPort  = preferences.getUInt("inPort", 7001); // Load input port
+  outPort = preferences.getUInt("outPort", 7000); // Load output port
+  for (int i = 0; i < numTags; i++) { if (i < OSCMessageMode.size()) { OSCMessageMode[i] = preferences.getUInt(("mode" + String(i)).c_str(), 0); } } // Load mode for each tag
+  preferences.end();
+}
+
+void oscSend(uint8_t column, int value) {
+  char address[64];
+  snprintf(address, sizeof(address), "/composition/columns/%d/connect", column);
+  OSCMessage msg(address);
+  msg.add(value);
+  Udp.beginPacket(outIp, outPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
+}
+
+void timeCodeOSCSend(uint8_t mode){
+  char address[20];
+  snprintf(address, sizeof(address), "/mode%d", mode);
+  OSCMessage msg(address);
+  Udp.beginPacket(outIp, outPort);
+  msg.send(Udp);
+  Udp.endPacket();
+  msg.empty();
+}
+
+void processTagID(const String& scannedTagID)
+{
+  for (size_t i = 0; i < tags.size(); i++) {
+
+    if (scannedTagID != tags[i]) {
+      continue;
+    }
+
+    String command = "";
+
+    if (i < commands.size()) {
+      command = commands[i];
+    }
+
+    Serial.printf(
+      "Matched tag %u: %s -> %s\n",
+      static_cast<unsigned>(i + 1),
+      scannedTagID.c_str(),
+      command.c_str()
+    );
+
+    SerialBT.printf(
+      "Matched tag %u: %s -> %s\n",
+      static_cast<unsigned>(i + 1),
+      scannedTagID.c_str(),
+      command.c_str()
+    );
+
+    // Existing Ethernet OSC output
+    oscSend(i + 1, 1);
+
+    // New ESP-NOW output
+    sendEspNowCommand(
+      command,
+      scannedTagID,
+      static_cast<uint8_t>(i + 1)
+    );
+    startNeoPixelAnimation();
+
+    return;
+  }
+
+  Serial.println("Unknown tag: " + scannedTagID);
+  SerialBT.println("Unknown tag: " + scannedTagID);
+}
+
+
+void readNFC(){
+  uint8_t success;
+  uint8_t uid[] = { 0, 0, 0, 0, 0, 0, 0 };  // Buffer to store the returned UID
+  uint8_t uidLength;                        // Length of the UID (4 or 7 bytes depending on ISO14443A card type)
+  tagID = "";
+  // Wait for an NTAG203 card.  When one is found 'uid' will be populated with
+  // the UID, and uidLength will indicate the size of the UUID (normally 7)
+  success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, TIMEOUT);
+
+  // NO CHANGE IN CARD
+  if (success && cardPresesnt){ return; }
+  // WAITING FOR NEW CARD
+  if (!success && !cardPresesnt) { return; }
+  // IF NEW TAG COUND
+  if (success && (!cardPresesnt)) {
+    cardPresesnt = true;
+    // Store UID to tagID
+    for (uint8_t i = 0; i < uidLength; i++) {
+      if (uid[i] < 0x10) { tagID += "0"; }
+      tagID += String(uid[i], HEX);
+    }
+    tagID.toUpperCase();
+    prevTagID = tagID;
+    if (DEBUG) {
+      Serial.println("Found an ISO14443A card");
+      Serial.print("  UID Length: ");Serial.print(uidLength, DEC);Serial.println(" bytes");
+      Serial.println("TAG ID: "+ tagID); Serial.print("  UID Value: "); nfc.PrintHex(uid, uidLength);
+      Serial.println("");
+    }
+    processTagID(tagID);
+    return;
+  }
+  // IF CARD REMOVED
+  if (!success && cardPresesnt) {
+    cardPresesnt = false;
+    if(DEBUG) {Serial.println("CARD REMOVED");}
+    for (int i = 0; i < numTags; i++) {
+      if (i < tags.size()) {
+        if (prevTagID == tags[i]) {
+          Serial.println(); Serial.println(removeCommand);
+          return;
+        }
+      }
+    }
+  }
+}
+
+void saveConfig(){
+  preferences.begin("RFID", false); // Open preferences with read/write access
+  preferences.putUInt("numTags", numTags); // Save number of tags
+  preferences.putString("removeCommand", removeCommand); // Save remove command
+  for (int i = 0; i < numTags; i++) {
+    if (i < tags.size()) {
+      preferences.putString(("tag" + String(i)).c_str(), tags[i]); // Save tag ID
+      preferences.putString(("command" + String(i)).c_str(), commands[i]); // Save command for tag ID
+    }
+  }
+  preferences.end(); // Close preferences
+}
+
+void getConfig(){
+  preferences.begin("RFID", true); // Open preferences with read-only access
+  numTags = preferences.getUInt("numTags", 2); // Get number of tags
+  removeCommand = preferences.getString("removeCommand", ""); // Get remove command
+  for (int i = 0; i < numTags; i++) {
+    if (i < tags.size()) {
+      tags[i] = preferences.getString(("tag" + String(i)).c_str(), ""); // Get tag ID
+      commands[i] = preferences.getString(("command" + String(i)).c_str(), ""); // Get command for tag ID
+    }
+  }
+  preferences.end(); // Close preferences
+  if (DEBUG) {
+    Serial.println("Number of tags: " + String(numTags));
+    Serial.println("Remove command: " + removeCommand);
+    for (int i = 0; i < numTags; i++) {
+      if (i < tags.size()) {
+        Serial.println("Tag ID " + String(i) + ": " + tags[i]);
+        Serial.println("Command for tag ID " + String(i) + ": " + commands[i]);
+      }
+    }
+  }
+  SerialBT.println("Number of tags: " + String(numTags));
+  SerialBT.println("Remove command: " + removeCommand);
+  for (int i = 0; i < numTags; i++) {
+    if (i < tags.size()) {
+      SerialBT.println("Tag ID " + String(i) + ": " + tags[i]);
+      SerialBT.println("Command for tag ID " + String(i) + ": " + commands[i]);
+    }
+  }
+
+  SerialBT.printf("Input port: %d\n", inPort);
+  SerialBT.printf("Output port: %d\n", outPort);
+  SerialBT.printf("IP: %s\n", ip.toString().c_str());
+  SerialBT.printf("Subnet: %s\n", subnet.toString().c_str());
+  SerialBT.printf("Gateway: %s\n", gateway.toString().c_str());
+  SerialBT.printf("OutIP: %s\n", outIp.toString().c_str());
+
+}
+
+
+bool processNeoPixelCommand(const String& data)
+{
+  if (data == "NP_GET") {
+    printNeoPixelConfig(SerialBT);
+    return true;
+  }
+
+  if (data == "NP_RUN") {
+    startNeoPixelAnimation();
+    return true;
+  }
+
+  if (data == "NP_OFF") {
+    clearNeoPixels();
+    SerialBT.println("NeoPixels switched off");
+    return true;
+  }
+
+  if (data == "NP_DEFAULT") {
+    resetNeoPixelConfig();
+
+    strip1.setBrightness(neoConfig.brightness);
+    strip2.setBrightness(neoConfig.brightness);
+    strip3.setBrightness(neoConfig.brightness);
+
+    SerialBT.println(
+      "NeoPixel defaults restored and saved"
+    );
+
+    printNeoPixelConfig(SerialBT);
+    return true;
+  }
+
+  int stripNumber;
+  int red;
+  int green;
+  int blue;
+
+  if (
+    sscanf(
+      data.c_str(),
+      "NP_SET_COLOR %d %d %d %d",
+      &stripNumber,
+      &red,
+      &green,
+      &blue
+    ) == 4
+  ) {
+    if (stripNumber < 1 || stripNumber > 3) {
+      SerialBT.println(
+        "ERROR: Strip number must be 1, 2 or 3"
+      );
+      return true;
+    }
+
+    if (
+      red < 0 || red > 255 ||
+      green < 0 || green > 255 ||
+      blue < 0 || blue > 255
+    ) {
+      SerialBT.println(
+        "ERROR: RGB values must be 0-255"
+      );
+      return true;
+    }
+
+    switch (stripNumber) {
+      case 1:
+        neoConfig.r1 = red;
+        neoConfig.g1 = green;
+        neoConfig.b1 = blue;
+        break;
+
+      case 2:
+        neoConfig.r2 = red;
+        neoConfig.g2 = green;
+        neoConfig.b2 = blue;
+        break;
+
+      case 3:
+        neoConfig.r3 = red;
+        neoConfig.g3 = green;
+        neoConfig.b3 = blue;
+        break;
+    }
+
+    saveNeoPixelConfig();
+
+    SerialBT.printf(
+      "Strip %d color saved: %d,%d,%d\n",
+      stripNumber,
+      red,
+      green,
+      blue
+    );
+
+    return true;
+  }
+
+  int value;
+
+  if (
+    sscanf(
+      data.c_str(),
+      "NP_SET_BRIGHTNESS %d",
+      &value
+    ) == 1
+  ) {
+    if (value < 0 || value > 255) {
+      SerialBT.println(
+        "ERROR: Brightness must be 0-255"
+      );
+      return true;
+    }
+
+    neoConfig.brightness =
+      static_cast<uint8_t>(value);
+
+    strip1.setBrightness(neoConfig.brightness);
+    strip2.setBrightness(neoConfig.brightness);
+    strip3.setBrightness(neoConfig.brightness);
+
+    // Re-transmit current pixel buffers using new brightness.
+    strip1.show();
+    strip2.show();
+    strip3.show();
+
+    saveNeoPixelConfig();
+
+    SerialBT.printf(
+      "Brightness set to %u and saved\n",
+      neoConfig.brightness
+    );
+
+    return true;
+  }
+
+  unsigned long unsignedValue;
+
+  if (
+    sscanf(
+      data.c_str(),
+      "NP_SET_SPEED %lu",
+      &unsignedValue
+    ) == 1
+  ) {
+    if (unsignedValue < 1 || unsignedValue > 10000) {
+      SerialBT.println(
+        "ERROR: Speed must be 1-10000 ms"
+      );
+      return true;
+    }
+
+    neoConfig.stepIntervalMs = unsignedValue;
+    saveNeoPixelConfig();
+
+    SerialBT.printf(
+      "Step interval set to %lu ms and saved\n",
+      unsignedValue
+    );
+
+    return true;
+  }
+
+  if (
+    sscanf(
+      data.c_str(),
+      "NP_SET_DELAY %lu",
+      &unsignedValue
+    ) == 1
+  ) {
+    if (unsignedValue > 60000) {
+      SerialBT.println(
+        "ERROR: Delay must be 0-60000 ms"
+      );
+      return true;
+    }
+
+    neoConfig.stripStartDelayMs = unsignedValue;
+    saveNeoPixelConfig();
+
+    SerialBT.printf(
+      "Strip start delay set to %lu ms and saved\n",
+      unsignedValue
+    );
+
+    return true;
+  }
+
+  return false;
+}
+
+void processData(String data) {
+  data.trim(); // Remove leading and trailing whitespace
+
+  Serial.print("BT command received: [");
+  Serial.print(data);
+  Serial.println("]");
+
+  // NeoPixel commands must be checked before the old N command.
+  if (processNeoPixelCommand(data)) {
+    return;
+  }
+
+  // Continue with network, tag and other commands...
+  auto updateIP = [&](const String& prefix, IPAddress& target, int offset) {
+    String value = data.substring(offset);
+    if (target.fromString(value)) {
+      saveNetworkConfig();
+      SerialBT.printf("✅ %s updated and saved.\n", prefix.c_str());
+    } else {
+      SerialBT.printf("❌ Invalid %s format.\n", prefix.c_str());
+    }
+  };
+  if (data.startsWith("SET_IP ")) { updateIP("IP", ip, 7); } 
+  else if (data.startsWith("SET_SUBNET ")) { updateIP("Subnet", subnet, 11); } 
+  else if (data.startsWith("SET_GATEWAY ")) { updateIP("Gateway", gateway, 12);  } 
+  else if (data.startsWith("SET_OUTIP ")) { updateIP("OutIP", outIp, 10); } 
+  else if (data.startsWith ("SET_INPORT ")) {
+    int port = data.substring(10).toInt();
+    if (port > 0 && port < 65536) { inPort = static_cast<uint16_t>(port); saveNetworkConfig(); SerialBT.printf("✅ Input port set to %d and saved.\n", inPort); } 
+    else { SerialBT.println("❌ Invalid port. Must be between 1 and 65535."); }
+  }
+  else if (data.startsWith("SET_OUTPORT ")) {
+    int port = data.substring(12).toInt();
+    if (port > 0 && port < 65536) { outPort = static_cast<uint16_t>(port); saveNetworkConfig(); SerialBT.printf("✅ Output port set to %d and saved.\n", outPort); } 
+    else { SerialBT.println("❌ Invalid port. Must be between 1 and 65535."); }
+  }
+  else if (data.startsWith("SET_MODE ")) {
+    int index = data.substring(9, 11).toInt() - 1;
+    if (index >= 0 && index < numTags) {
+      int mode = data.substring(11).toInt();
+      if (mode >= 0 && mode <= numTags) {
+        OSCMessageMode[index] = static_cast<uint8_t>(mode);
+        saveNetworkConfig();
+        SerialBT.printf("✅ Mode for tag %d set to %d and saved.\n", index + 1, mode);
+      } else {
+        SerialBT.println("❌ Invalid mode. Must be 0 or 1.");
+      }
+    } else {
+      SerialBT.println("❌ Invalid tag index. Must be between 1 and " + String(numTags) + ".");
+    }
+  }
+  
+  else if (data == "IP") { SerialBT.printf("ETH IP: %s\n", ETH.localIP().toString().c_str());}
+  else if (data == "MAC") { SerialBT.printf("ETH MAC: %s\n", ETH.macAddress().c_str());}
+  if (
+      data.length() >= 2 &&
+      data.charAt(0) == 'N' &&
+      isDigit(data.charAt(1)))
+  {
+    int requestedTags = data.substring(1).toInt();
+
+    if (requestedTags < 1 || requestedTags > 20)
+    {
+      SerialBT.println(
+          "ERROR: Number of tags must be between 1 and 20.");
+      return;
+    }
+
+    numTags = static_cast<uint8_t>(requestedTags);
+
+    tags.resize(numTags, "");
+    commands.resize(numTags, "");
+    OSCMessageMode.resize(numTags, 0);
+
+    saveConfig();
+
+    SerialBT.println(
+        "Number of tags set to: " + String(numTags));
+
+    Serial.println(
+        "Number of tags set to: " + String(numTags));
+
+    return;
+  }
+  else if (data.startsWith("T"))
+  {
+    int index = data.substring(1).toInt() - 1;
+    if (index < 0 || index >= numTags)
+    {
+      SerialBT.println("Invalid tag index");
+      return;
+    }
+    tags[index] = prevTagID;
+    saveConfig();
+    SerialBT.println("Tag ID set for index " + String(index + 1) + ": " + tags[index]);
+    return;
+  }
+  else if (data.startsWith("C"))
+  {
+    int index = data.substring(1, data.length()).toInt() - 1;
+    if (index >= 0 && index < numTags) {
+      commands[index] = data.substring(3, data.length());
+    }
+    saveConfig();
+    SerialBT.println("Command set for index " + String(index) + ": " + commands[index]);
+    Serial.println("Command set for index " + String(index) + ": " + commands[index]);
+    return;
+  }
+  else if (data.startsWith("R"))
+  {
+    removeCommand = data.substring(1, data.length());
+    saveConfig();
+    SerialBT.println("Remove command set to: " + removeCommand);
+    Serial.println("Remove command set to: " + removeCommand);
+    return;
+  }
+  else if (data.indexOf("HELP") >= 0)
+  {
+    SerialBT.println(HELP);
+    Serial.println(HELP);
+    return;
+  }
+  else if (data.indexOf("GET") >= 0)
+  {
+    getConfig();
+    return;
+  }
+}
+
+void readBTSerial(){
+  if (SerialBT.available()) {
+    String incoming = SerialBT.readStringUntil('\n');
+    processData(incoming);
+    if (DEBUG) {SerialBT.println(incoming);}
+  }
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+  switch (event) {
+    case SYSTEM_EVENT_ETH_START:
+      Serial.println("ETH Started");
+      ETH.setHostname("esp32-ethernet");
+      break;
+    case SYSTEM_EVENT_ETH_CONNECTED:
+      Serial.println("ETH Connected");
+      break;
+    case SYSTEM_EVENT_ETH_GOT_IP:
+      Serial.print("ETH IP: ");
+      Serial.println(ETH.localIP());
+      break;
+    case SYSTEM_EVENT_ETH_DISCONNECTED:
+      Serial.println("ETH Disconnected");
+      ESP.restart(); // Restart ESP32 on disconnection
+      break;
+    case SYSTEM_EVENT_ETH_STOP:
+      Serial.println("ETH Stopped");
+      break;
+    default:
+      break;
+  }
+}
+
+//NEOPIXEL INIT
+
+void neoPixelInit()
+{
+  strip1.begin();
+  strip2.begin();
+  strip3.begin();
+
+  strip1.setBrightness(neoConfig.brightness);
+  strip2.setBrightness(neoConfig.brightness);
+  strip3.setBrightness(neoConfig.brightness);
+
+  strip1.clear();
+  strip2.clear();
+  strip3.clear();
+
+  strip1.show();
+  strip2.show();
+  strip3.show();
+
+  Serial.println("NeoPixel initialized");
+  printNeoPixelConfig(Serial);
+}
+
+//NEOPIXEL INIT END
+
+
+void ethInit() {
+  ETH.begin( ETH_ADDR, ETH_POWER_PIN, ETH_MDC_PIN, ETH_MDIO_PIN, ETH_TYPE, ETH_CLK_MODE_0);
+  ETH.config(ip, gateway, subnet);
+  WiFi.onEvent(WiFiEvent);
+  Udp.begin(inPort);
+  delay(5000); // Wait for the Ethernet to initialize
+  Serial.println("ETH Initialized");
+  Serial.printf("ETH IP: %s\n", ETH.localIP().toString().c_str());
+  Serial.printf("ETH MAC: %s\n", ETH.macAddress().c_str());
+}
+
+void nfcInit(){
+  Wire.begin(I2C_SDA, I2C_SCL);  delay(100); // Initialize I2C with custom pins
+  nfc.begin();
+
+  uint32_t versiondata = nfc.getFirmwareVersion();
+  if (!versiondata) {
+    Serial.println("PN532 not detected. Retrying...");
+    delay(5000);  // Retry after 5 seconds
+    Serial.println("Restarting...");
+    ESP.restart(); // Or go back to loop
+  }
+  
+  if (DEBUG) {
+    // Got ok data, print it out!
+    Serial.print("Found chip PN532"); Serial.println((versiondata>>24) & 0xFF, HEX);
+    Serial.print("Firmware ver. "); Serial.print((versiondata>>16) & 0xFF, DEC);
+    Serial.print('.'); Serial.println((versiondata>>8) & 0xFF, DEC);
+
+    Serial.println("Waiting for an ISO14443A Card ...");
+  } 
+}
+
+void loadConfig(){
+  preferences.begin("RFID", true); // 
+  numTags = preferences.getUInt("numTags", 2); // Get number of tags
+  tags.resize(numTags, "");
+  commands.resize(numTags, "");
+  OSCMessageMode.resize(numTags, 0);
+  removeCommand = preferences.getString("removeCommand", ""); // Get remove command
+  for (int i = 0; i < numTags; i++) {
+    if (i < tags.size()) {
+      tags[i] = preferences.getString(("tag" + String(i)).c_str(), ""); // Get tag ID
+      commands[i] = preferences.getString(("command" + String(i)).c_str(), ""); // Get command for tag ID
+    }
+  }
+  preferences.end(); // Close preferences
+}
+
+
+
+void setup()
+{
+  Serial.begin(115200);
+  delay(200);
+
+  loadConfig();
+  loadNetworkConfig();
+  loadNeoPixelConfig();
+
+  neoPixelInit();
+
+  if (!espNowInit()) {
+    Serial.println(
+      "ESP-NOW initialization failed"
+    );
+  }
+
+  if (!SerialBT.begin("NFC_CUBE_PODIUM")) {
+    Serial.println(
+      "Bluetooth Serial initialization failed"
+    );
+  } else {
+    Serial.println(
+      "Bluetooth Serial initialized"
+    );
+  }
+
+  nfcInit();
+  ethInit();
+
+  Serial.println("System initialized");
+}
+
+void loop()
+{
+  readNFC();
+  readBTSerial();
+
+}
